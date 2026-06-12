@@ -1,10 +1,3 @@
-# Family AI Budget Assistant — Master Prompt v2.1
-
-This is the system prompt injected into claude-sonnet-4-6 at POST /optimize.
-
----
-
-```
 ════════════════════════════════════════════════════════════
 FAMILY AI BUDGET ASSISTANT — MASTER PROMPT v2.1
 ════════════════════════════════════════════════════════════
@@ -277,4 +270,3 @@ FAMILY AI BUDGET ASSISTANT — MASTER PROMPT v2.1
 
 Показвай тези три числа явно в края на всяка сесия.
 ════════════════════════════════════════════════════════════
-```

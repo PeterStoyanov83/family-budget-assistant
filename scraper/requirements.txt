@@ -1,0 +1,6 @@
+playwright==1.49.0
+beautifulsoup4==4.12.3
+apscheduler==3.10.4
+pytesseract==0.3.13
+httpx==0.28.0
+# shared with backend — install backend/requirements.txt first
