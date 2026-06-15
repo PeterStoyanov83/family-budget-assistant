@@ -63,13 +63,16 @@ def clear_auth_cookies(response: Response) -> None:
 
 
 def _set_cookie(response: Response, name: str, value: str, max_age: int) -> None:
+    is_prod = settings.environment != "development"
     response.set_cookie(
         key=name,
         value=value,
         max_age=max_age,
         httponly=True,
-        secure=settings.environment != "development",
-        samesite="strict",
+        secure=is_prod,
+        # SameSite=None required for cross-origin AJAX (frontend/backend on separate Railway subdomains)
+        # SameSite=Strict is safe for local dev where both run on localhost
+        samesite="none" if is_prod else "strict",
     )
 
 
