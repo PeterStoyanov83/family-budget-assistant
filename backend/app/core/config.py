@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     environment: str = "development"
     # AES-256 key for encrypting personal data columns (32 bytes, base64-encoded)
     encryption_key: str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    # Comma-separated list of allowed CORS origins
+    cors_origins: str = "http://localhost:3000"
 
     model_config = {"env_file": ".env"}
 
