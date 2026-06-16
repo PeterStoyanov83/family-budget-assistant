@@ -1,3 +1,6 @@
+import asyncio
+import subprocess
+
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
@@ -9,6 +12,12 @@ app = FastAPI(
     description="AI-powered family shopping optimizer for the Bulgarian market",
     version="0.1.0",
 )
+
+
+@app.on_event("startup")
+async def run_migrations():
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: subprocess.run(["alembic", "upgrade", "head"], check=False))
 
 
 def _is_allowed_origin(origin: str) -> bool:
