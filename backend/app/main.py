@@ -44,7 +44,7 @@ app.include_router(lists.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": app.version}
+    return {"status": "ok", "version": app.version, "build": "cors-v3"}
 
 
 @app.get("/metrics")
