@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     # AES-256 key for encrypting personal data columns (32 bytes, base64-encoded)
     encryption_key: str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     # Comma-separated list of allowed CORS origins
-    cors_origins: str = "http://localhost:3000"
+    cors_origins: str = "http://localhost:3000,https://frontend-production-4b3f.up.railway.app"
 
     model_config = {"env_file": ".env"}
 
