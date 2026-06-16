@@ -16,6 +16,12 @@ app = FastAPI(
 
 @app.on_event("startup")
 async def run_migrations():
+    # Fire-and-forget: don't block startup so health check responds immediately.
+    # Railway kills deploys if /health doesn't respond before healthcheckTimeout.
+    asyncio.create_task(_run_alembic())
+
+
+async def _run_alembic():
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: subprocess.run(["alembic", "upgrade", "head"], check=False))
 
@@ -53,7 +59,7 @@ app.include_router(lists.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": app.version, "build": "cors-v3"}
+    return {"status": "ok", "version": app.version, "build": "cors-v4"}
 
 
 @app.get("/metrics")
