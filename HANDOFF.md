@@ -1,167 +1,152 @@
 # Family AI Budget Assistant — Session Handoff
 
-> Last updated: 2026-06-15
-> Status: **Phase 1 complete** — Railway deploy 95% done (one step remaining)
+> Last updated: 2026-06-16
+> Status: **Phase 1 deployed — CORS blocker on backend, root cause = deploy pipeline**
 
 ---
 
 ## What This Project Is
 
-AI-powered family shopping optimizer for the Bulgarian market. The core question it answers:
-
+AI-powered family shopping optimizer for the Bulgarian market. Core question:
 > "How should my family shop this week to spend the least money, time and effort?"
-
-This is fundamentally different from competitors (Pazarko, Shopko, Veliko) that only do product-level price lookup. We operate at the **basket level** and add route planning, fake promotion detection, predictive needs, and bulk-buying logic.
 
 ---
 
-## Current State (as of 2026-06-15)
+## Current State (as of 2026-06-16)
 
-### Phase 1 — Foundation ✅ COMPLETE + Deployed
+### Phase 1 — Foundation ✅ Code complete, Railway deploy PARTIALLY working
 
-All Phase 1 code is committed and pushed to GitHub (`main` branch, 3 commits).
+Frontend deploys correctly. Backend is online but stuck on old deployment.
 
 ---
 
 ## Railway Project: `remarkable-optimism`
 
-**Project ID:** `fd3ea5bf-8079-4232-a1d9-1052f67a899a`
-
 | Service | Status | Domain |
 |---------|--------|--------|
-| `backend` | GitHub-linked, Root Dir = `backend` | `https://backend-production-3cd8.up.railway.app` |
-| `frontend` | GitHub-linked, Root Dir = `frontend` | `https://frontend-production-4b3f.up.railway.app` |
-| `Postgres` | ✅ Online (managed, has volume) | `postgres.railway.internal:5432` |
-| `Redis` | ✅ Online (managed, has volume) | `redis.railway.internal:6379` |
-
-**Old project `family-budget-assistant`** — ignore/delete. Full of duplicates, never successfully deployed.
+| `backend` | Online but OLD code running | `https://backend-production-3cd8.up.railway.app` |
+| `frontend` | ✅ Deploying correctly | `https://frontend-production-4b3f.up.railway.app` |
+| `Postgres` | ✅ Online | `postgres.railway.internal:5432` |
+| `Redis` | ✅ Online | `redis.railway.internal:6379` |
 
 ---
 
-## ⚠️ Pick up here next session
+## ⚠️ THE BLOCKER — Pick up here next session
 
-### Step 1 — Set ANTHROPIC_API_KEY on backend (you must provide the key)
-```bash
-railway link  # select: remarkable-optimism → production
-railway variables --service backend --set "ANTHROPIC_API_KEY=sk-ant-YOUR_KEY"
-```
+### Root Problem
+The backend service is stuck running an OLD Docker image. Every new deployment fails silently. The CORS error in the browser (`No 'Access-Control-Allow-Origin' header`) is a symptom — the real issue is Railway not activating new backend deployments.
 
-### Step 2 — Push to GitHub to trigger deploys (if not already done)
-```bash
-git push origin main
-```
-Railway will auto-deploy both services from GitHub on push.
-
-### Step 3 — Verify backend is live
+### Diagnostic Step 1 — Confirm old code is running
 ```bash
 curl https://backend-production-3cd8.up.railway.app/health
-# expect: {"status": "ok"}
 ```
-The `releaseCommand = "alembic upgrade head"` in `backend/railway.toml` runs migrations automatically before uvicorn starts.
+- If response has `"build":"cors-v3"` → NEW code is live (CORS fix worked, investigate further)
+- If response does NOT have `"build":"cors-v3"` → OLD code confirmed, Railway deploy pipeline broken
 
-### Step 4 — Run seed data locally against Railway DB
-```bash
-cd backend
-DATABASE_URL=postgresql+asyncpg://postgres:<PG_PASS>@acela.proxy.rlwy.net:<PORT>/railway python -m scraper.seed
+### Diagnostic Step 2 — Check deploy logs
+Go to Railway dashboard → backend service → **Deployments tab** → click the latest deployment → read the build/deploy logs. Look for errors.
+
+### Most Likely Causes
+1. **`alembic upgrade head` was failing as `releaseCommand`** — This blocked every deployment since day 1. Fixed in commit `0fcdad8` (moved to startCommand with `;`).
+2. **Docker build failing** — Check Railway build logs for Python package install errors.
+3. **Health check failing before app starts** — `healthcheckTimeout = 30` might be too short if alembic takes time.
+
+### Fix Already In Code (commit `0fcdad8`)
+`backend/railway.toml` now has:
+```toml
+startCommand = "alembic upgrade head; uvicorn app.main:app --host 0.0.0.0 --port $PORT"
 ```
-Get `PG_PASS` and `PORT` from Railway dashboard → Postgres service → Variables → `PGPASSWORD` and `RAILWAY_TCP_PROXY_PORT`.
+No more `releaseCommand` that blocks deployment.
 
-### Step 5 — Verify full flow
-1. Open `https://frontend-production-4b3f.up.railway.app`
-2. Register → Login → Dashboard shows seed data
-3. Products search → search "мляко" → returns EUR prices
+### If Deploy Still Fails
+Try increasing health check timeout in `backend/railway.toml`:
+```toml
+healthcheckTimeout = 60
+```
+Or temporarily remove the health check to rule it out.
 
 ---
 
-## What was fixed during the Railway deploy sessions (2026-06-15)
+## Architecture — How Frontend Connects to Backend
 
-| Problem | Fix |
-|---------|-----|
-| Railway using Railpack instead of Dockerfile | Added `backend/Procfile` with uvicorn start command |
-| `next@14.2.18` blocked by Railway security scan | Upgraded to `14.2.35` |
-| Frontend Docker build failing | Added `frontend/public/.gitkeep` (Docker COPY needs dir to exist) |
-| Backend DATABASE_URL pointing to wrong host | Fixed to `postgres.railway.internal` (Postgres service in same project) |
-| pgvector not enabled | Ran `CREATE EXTENSION IF NOT EXISTS vector` on new Postgres |
-| Old `family-budget-assistant` project | Abandoned — use `remarkable-optimism` |
+```
+Browser → https://backend-production-3cd8.up.railway.app (direct CORS calls)
+```
+
+| Service | Variable | Value | Where set |
+|---|---|---|---|
+| Frontend | `NEXT_PUBLIC_API_URL` | `https://backend-production-3cd8.up.railway.app` | `frontend/.env.production` (in repo) |
+| Backend | `CORS_ORIGINS` | `http://localhost:3000,https://frontend-production-4b3f.up.railway.app` | Railway dashboard + baked in `config.py` default |
+
+### CORS Implementation
+`backend/app/main.py` has a custom `@app.middleware("http")` that:
+- Handles OPTIONS preflight returning 200 + CORS headers
+- Allows any `*.up.railway.app` origin AND explicit `cors_origins` list
+- Uses `samesite="none"; secure=True` in production for cross-origin cookies
 
 ---
 
-## Environment Variables — `remarkable-optimism` backend service
+## Environment Variables
 
-| Variable | Value |
-|----------|-------|
-| `DATABASE_URL` | `postgresql+asyncpg://postgres:<pass>@postgres.railway.internal:5432/railway` |
-| `REDIS_URL` | `redis://default:<pass>@redis.railway.internal:6379` |
-| `SECRET_KEY` | set ✅ |
-| `ENCRYPTION_KEY` | set ✅ |
-| `ENVIRONMENT` | `production` |
-| `ANTHROPIC_API_KEY` | ❌ **NOT SET — required before backend works** |
+### Backend (Railway dashboard)
+| Variable | Value | Status |
+|----------|-------|--------|
+| `DATABASE_URL` | `postgresql+asyncpg://postgres:<pass>@postgres.railway.internal:5432/railway` | ✅ |
+| `REDIS_URL` | `redis://default:<pass>@redis.railway.internal:6379` | ✅ |
+| `SECRET_KEY` | set | ✅ |
+| `ENCRYPTION_KEY` | set | ✅ |
+| `ENVIRONMENT` | `production` | ✅ |
+| `ANTHROPIC_API_KEY` | set | ✅ |
+| `CORS_ORIGINS` | `http://localhost:3000,https://frontend-production-4b3f.up.railway.app` | ✅ |
 
-Frontend has `API_URL=https://backend-production-3cd8.up.railway.app` set ✅
+### Frontend (Railway dashboard)
+- `NEXT_PUBLIC_API_URL` should be DELETED from dashboard (now in `frontend/.env.production`)
+- If it still exists with a trailing space, delete it
 
 ---
 
 ## Git State
 
 ```
-main branch (GitHub: PeterStoyanov83/family-budget-assistant)
-
-0ba781b  fix: add Procfile for Railpack + upgrade Next.js to 14.2.35
-9948dae  fix: add public/.gitkeep so Docker COPY step doesn't fail  ← may not be pushed yet
-881ee3f  feat: Phase 1 complete — full backend, frontend, scraper + Railway deploy config
-d18f7d4  init: Family AI Budget Assistant — project scaffold
+main branch — latest commits:
+3c8c629  chore: add build marker to health endpoint for deploy verification
+0fcdad8  fix: move alembic out of releaseCommand into startCommand
+1f5efc9  config: bake Railway URLs into repo (frontend/.env.production + cors default)
+7f5c73e  fix: replace CORSMiddleware with explicit custom CORS middleware
+ec0d4f8  fix: drop proxy — browser calls backend directly via NEXT_PUBLIC_API_URL
 ```
-
-**Commits that may not be pushed yet:** `9948dae` (public/.gitkeep) and `0ba781b` (Procfile + Next.js).
-Run `git status` and `git push origin main` to confirm.
 
 ---
 
-## How to Start the App Locally
+## How to Start Locally
 
 ```bash
-cp .env.example .env          # fill in ANTHROPIC_API_KEY etc.
+cp .env.example .env          # fill in ANTHROPIC_API_KEY
 docker compose up
 docker compose exec backend alembic upgrade head
-docker compose exec -e PYTHONPATH=/scraper:/app backend python /scraper/seed.py
-
-# Frontend: http://localhost:3000
-# Backend:  http://localhost:8000
-# API docs: http://localhost:8000/docs
 ```
 
----
-
-## Not yet built (Phase 2+)
-- `POST /optimize` — Claude AI basket optimization (Phase 2)
-- `GET /route` — Mapbox route optimization (Phase 2)
-- Celery task bodies (`score_promotions`, `anonymize_deleted_users` — stubbed)
-- Klaviyo onboarding emails (Phase 2)
-- Amplitude EU analytics (Phase 2)
-- Stripe billing (Phase 3)
-- Billa, Fantastico, T-Market, DM, Metro scrapers (Phase 2)
-- Tests (none yet)
+Frontend: http://localhost:3000 | Backend: http://localhost:8000
 
 ---
+
+## Not Yet Built (Phase 2+)
+- `POST /optimize` — Claude AI basket optimization
+- `GET /route` — Mapbox route optimization
+- Celery task bodies (score_promotions, anonymize_deleted_users — stubbed)
+- Klaviyo onboarding emails
+- Amplitude EU analytics
+- Stripe billing
+- Billa, Fantastico, T-Market, DM, Metro scrapers
+- Tests
 
 ## The Three MVP Phases
 
-### Phase 1 — Foundation ✅ DONE
+### Phase 1 — Foundation (code complete, deploy blocked)
 Auth · product catalog · Lidl+Kaufland scraping · shopping lists · price comparison · dashboard · GDPR soft-delete
 
-### Phase 2 — Intelligence ← NEXT
-`POST /optimize` with Claude AI (Master Prompt v2.1) · promotion scoring Celery task · route optimization (Mapbox) · BigQuery price history · +5 chains · Klaviyo · Amplitude EU
+### Phase 2 — Intelligence ← NEXT after deploy fixed
+`POST /optimize` with Claude AI · promotion scoring · route optimization (Mapbox) · BigQuery · +5 chains · Klaviyo · Amplitude EU
 
 ### Phase 3 — Growth
-Predictive shopping · bulk buying · household analytics · loyalty card pricing · Stripe billing · mobile PWA · B2B
-
----
-
-## Key Business Rules (non-negotiable)
-
-1. **All prices in EUR** — Bulgaria adopted the Euro; never use BGN/лв.
-2. **Basket optimization always** — never optimize individual products in isolation.
-3. **Every promotion must be scored** — REAL / AVERAGE / FAKE against 30-day history.
-4. **Transport threshold** — only recommend extra stores if net saving > 5 € after fuel + time.
-5. **Unit price normalization** — always compare €/kg or €/l, never package price.
-6. **GDPR from day one** — soft delete on all models, AES-256 on personal data, Amplitude EU only.
+Predictive shopping · bulk buying · loyalty cards · Stripe · mobile PWA · B2B
