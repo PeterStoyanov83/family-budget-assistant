@@ -1,117 +1,142 @@
 # Family AI Budget Assistant — Session Handoff
 
 > Last updated: 2026-06-16
-> Status: **Phase 1 deployed — CORS blocker on backend, root cause = deploy pipeline**
+> Status: **Phase 1 deployed — awaiting confirmation that CORS fix is live**
 
 ---
 
 ## What This Project Is
 
-AI-powered family shopping optimizer for the Bulgarian market. Core question:
+AI-powered family shopping optimizer for the Bulgarian market.
 > "How should my family shop this week to spend the least money, time and effort?"
 
 ---
 
 ## Current State (as of 2026-06-16)
 
-### Phase 1 — Foundation ✅ Code complete, Railway deploy PARTIALLY working
+### Phase 1 — Foundation ✅ Code complete, Railway deploy unblocked (pending verify)
 
-Frontend deploys correctly. Backend is online but stuck on old deployment.
+The root cause of all CORS failures was identified and fixed:
+- `alembic upgrade head` ran BEFORE uvicorn in `startCommand`
+- It took >30s → health check killed the deployment → Railway rolled back to old image
+- Every backend push for the past session was silently reverted
 
 ---
 
 ## Railway Project: `remarkable-optimism`
 
-| Service | Status | Domain |
-|---------|--------|--------|
-| `backend` | Online but OLD code running | `https://backend-production-3cd8.up.railway.app` |
-| `frontend` | ✅ Deploying correctly | `https://frontend-production-4b3f.up.railway.app` |
-| `Postgres` | ✅ Online | `postgres.railway.internal:5432` |
-| `Redis` | ✅ Online | `redis.railway.internal:6379` |
+| Service | Domain |
+|---------|--------|
+| `backend` | `https://backend-production-3cd8.up.railway.app` |
+| `frontend` | `https://frontend-production-4b3f.up.railway.app` |
+| `Postgres` | `postgres.railway.internal:5432` ✅ |
+| `Redis` | `redis.railway.internal:6379` ✅ |
 
 ---
 
-## ⚠️ THE BLOCKER — Pick up here next session
+## ⚠️ Pick up here next session
 
-### Root Problem
-The backend service is stuck running an OLD Docker image. Every new deployment fails silently. The CORS error in the browser (`No 'Access-Control-Allow-Origin' header`) is a symptom — the real issue is Railway not activating new backend deployments.
-
-### Diagnostic Step 1 — Confirm old code is running
+### Step 1 — Confirm new backend code is live
 ```bash
 curl https://backend-production-3cd8.up.railway.app/health
 ```
-- If response has `"build":"cors-v3"` → NEW code is live (CORS fix worked, investigate further)
-- If response does NOT have `"build":"cors-v3"` → OLD code confirmed, Railway deploy pipeline broken
+- `"build":"cors-v3"` in response → new code is live ✅
+- No `build` field → still old code → check Railway deploy logs again
 
-### Diagnostic Step 2 — Check deploy logs
-Go to Railway dashboard → backend service → **Deployments tab** → click the latest deployment → read the build/deploy logs. Look for errors.
+### Step 2 — Test frontend
+Open `https://frontend-production-4b3f.up.railway.app` → Register → Login → Dashboard
 
-### Most Likely Causes
-1. **`alembic upgrade head` was failing as `releaseCommand`** — This blocked every deployment since day 1. Fixed in commit `0fcdad8` (moved to startCommand with `;`).
-2. **Docker build failing** — Check Railway build logs for Python package install errors.
-3. **Health check failing before app starts** — `healthcheckTimeout = 30` might be too short if alembic takes time.
-
-### Fix Already In Code (commit `0fcdad8`)
-`backend/railway.toml` now has:
-```toml
-startCommand = "alembic upgrade head; uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+### Step 3 — If CORS still fails after new code confirmed live
+Check Railway backend → Variables → confirm `CORS_ORIGINS` is set to:
 ```
-No more `releaseCommand` that blocks deployment.
-
-### If Deploy Still Fails
-Try increasing health check timeout in `backend/railway.toml`:
-```toml
-healthcheckTimeout = 60
+http://localhost:3000,https://frontend-production-4b3f.up.railway.app
 ```
-Or temporarily remove the health check to rule it out.
+(Already baked as default in `config.py` so this should not be needed)
+
+### Step 4 — Run seed data (once auth works)
+```bash
+# Get PG connection details from Railway dashboard → Postgres → Variables
+DATABASE_URL=postgresql+asyncpg://postgres:<PG_PASS>@<PROXY_HOST>:<PORT>/railway \
+  python -m scraper.seed
+```
+
+---
+
+## What Was Fixed This Session (2026-06-16)
+
+| Problem | Fix | Commit |
+|---------|-----|--------|
+| Next.js `rewrites()` read `API_URL` at build time, not runtime | Drop proxy entirely; browser calls backend directly via `NEXT_PUBLIC_API_URL` | `ec0d4f8` |
+| `NEXT_PUBLIC_API_URL` not embedded in build | Added `ARG NEXT_PUBLIC_API_URL` to frontend Dockerfile | `ec0d4f8` |
+| `NEXT_PUBLIC_API_URL` had trailing space in Railway var | Baked correct URL into `frontend/.env.production` (committed to repo) | `1f5efc9` |
+| CORS blocked cross-origin requests | Replaced FastAPI CORSMiddleware with custom `@app.middleware("http")` | `7f5c73e` |
+| Backend never deployed new code | `alembic upgrade head` as `releaseCommand` blocked every deploy for >30s | `dde8eea` |
+| Health check killed deploys | uvicorn now starts immediately; alembic runs via `startup` event in background | `dde8eea` |
+| CORS origins hardcoded to localhost only | `cors_origins` default in `config.py` includes Railway frontend URL | `1f5efc9` |
+| Auth cookies blocked cross-origin | `SameSite=None; Secure=True` in production | `ec0d4f8` |
 
 ---
 
 ## Architecture — How Frontend Connects to Backend
 
 ```
-Browser → https://backend-production-3cd8.up.railway.app (direct CORS calls)
+Browser
+  │  fetch("https://backend-production-3cd8.up.railway.app/auth/login")
+  │  NEXT_PUBLIC_API_URL embedded in bundle at build time (frontend/.env.production)
+  ▼
+Railway Backend (FastAPI)
+  │  Custom CORS middleware: allows *.up.railway.app + explicit list
+  │  SameSite=None cookies for cross-origin auth
+  ▼
+Railway Postgres + Redis
 ```
 
-| Service | Variable | Value | Where set |
-|---|---|---|---|
-| Frontend | `NEXT_PUBLIC_API_URL` | `https://backend-production-3cd8.up.railway.app` | `frontend/.env.production` (in repo) |
-| Backend | `CORS_ORIGINS` | `http://localhost:3000,https://frontend-production-4b3f.up.railway.app` | Railway dashboard + baked in `config.py` default |
+**No proxy.** Browser calls backend directly. All CORS handled in `backend/app/main.py`.
 
-### CORS Implementation
-`backend/app/main.py` has a custom `@app.middleware("http")` that:
-- Handles OPTIONS preflight returning 200 + CORS headers
-- Allows any `*.up.railway.app` origin AND explicit `cors_origins` list
-- Uses `samesite="none"; secure=True` in production for cross-origin cookies
+---
+
+## Key Files Changed This Session
+
+| File | What changed |
+|------|-------------|
+| `frontend/.env.production` | `NEXT_PUBLIC_API_URL=https://backend-production-3cd8.up.railway.app` |
+| `frontend/Dockerfile` | `ARG NEXT_PUBLIC_API_URL` → `ENV` in builder stage |
+| `frontend/lib/api.ts` | `API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""` |
+| `frontend/next.config.mjs` | Removed broken `rewrites()` |
+| `backend/app/main.py` | Custom CORS middleware + startup migration event |
+| `backend/app/core/config.py` | `cors_origins` default includes Railway frontend URL |
+| `backend/app/core/security.py` | `SameSite=None` in production for cross-origin cookies |
+| `backend/railway.toml` | `startCommand = uvicorn` only; `healthcheckTimeout = 120` |
+| `.gitignore` | `.env.production` removed (safe to commit — no secrets) |
 
 ---
 
 ## Environment Variables
 
-### Backend (Railway dashboard)
-| Variable | Value | Status |
-|----------|-------|--------|
-| `DATABASE_URL` | `postgresql+asyncpg://postgres:<pass>@postgres.railway.internal:5432/railway` | ✅ |
-| `REDIS_URL` | `redis://default:<pass>@redis.railway.internal:6379` | ✅ |
-| `SECRET_KEY` | set | ✅ |
-| `ENCRYPTION_KEY` | set | ✅ |
-| `ENVIRONMENT` | `production` | ✅ |
-| `ANTHROPIC_API_KEY` | set | ✅ |
-| `CORS_ORIGINS` | `http://localhost:3000,https://frontend-production-4b3f.up.railway.app` | ✅ |
+### Backend (Railway dashboard — secrets only)
+| Variable | Status |
+|----------|--------|
+| `DATABASE_URL` | ✅ set |
+| `REDIS_URL` | ✅ set |
+| `SECRET_KEY` | ✅ set |
+| `ENCRYPTION_KEY` | ✅ set |
+| `ENVIRONMENT` | ✅ `production` |
+| `ANTHROPIC_API_KEY` | ✅ set |
+| `CORS_ORIGINS` | ✅ set (also baked in code default) |
 
 ### Frontend (Railway dashboard)
-- `NEXT_PUBLIC_API_URL` should be DELETED from dashboard (now in `frontend/.env.production`)
-- If it still exists with a trailing space, delete it
+- `NEXT_PUBLIC_API_URL` — **delete this if it exists with trailing space**; value now in `frontend/.env.production`
 
 ---
 
-## Git State
+## Git State (latest commits)
 
 ```
-main branch — latest commits:
+dde8eea  fix: health check was killing deploys before uvicorn could start
+ce44c9e  docs: update HANDOFF.md
 3c8c629  chore: add build marker to health endpoint for deploy verification
 0fcdad8  fix: move alembic out of releaseCommand into startCommand
-1f5efc9  config: bake Railway URLs into repo (frontend/.env.production + cors default)
+1f5efc9  config: bake Railway URLs into repo (frontend/.env.production)
 7f5c73e  fix: replace CORSMiddleware with explicit custom CORS middleware
 ec0d4f8  fix: drop proxy — browser calls backend directly via NEXT_PUBLIC_API_URL
 ```
@@ -121,32 +146,47 @@ ec0d4f8  fix: drop proxy — browser calls backend directly via NEXT_PUBLIC_API_
 ## How to Start Locally
 
 ```bash
-cp .env.example .env          # fill in ANTHROPIC_API_KEY
+cp .env.example .env   # fill in ANTHROPIC_API_KEY and other secrets
 docker compose up
-docker compose exec backend alembic upgrade head
+# migrations run automatically via startup event
+# Frontend: http://localhost:3000
+# Backend:  http://localhost:8000
+# API docs: http://localhost:8000/docs
 ```
-
-Frontend: http://localhost:3000 | Backend: http://localhost:8000
 
 ---
 
 ## Not Yet Built (Phase 2+)
-- `POST /optimize` — Claude AI basket optimization
-- `GET /route` — Mapbox route optimization
-- Celery task bodies (score_promotions, anonymize_deleted_users — stubbed)
-- Klaviyo onboarding emails
-- Amplitude EU analytics
-- Stripe billing
-- Billa, Fantastico, T-Market, DM, Metro scrapers
-- Tests
+
+- `POST /optimize` — Claude AI basket optimization (Phase 2)
+- `GET /route` — Mapbox route optimization (Phase 2)
+- Celery task bodies (`score_promotions`, `anonymize_deleted_users` — stubbed)
+- Klaviyo onboarding emails (Phase 2)
+- Amplitude EU analytics (Phase 2)
+- Stripe billing (Phase 3)
+- Billa, Fantastico, T-Market, DM, Metro scrapers (Phase 2)
+- Tests (none yet)
+
+---
 
 ## The Three MVP Phases
 
-### Phase 1 — Foundation (code complete, deploy blocked)
+### Phase 1 — Foundation (code done, deploy being verified)
 Auth · product catalog · Lidl+Kaufland scraping · shopping lists · price comparison · dashboard · GDPR soft-delete
 
-### Phase 2 — Intelligence ← NEXT after deploy fixed
-`POST /optimize` with Claude AI · promotion scoring · route optimization (Mapbox) · BigQuery · +5 chains · Klaviyo · Amplitude EU
+### Phase 2 — Intelligence ← NEXT after Phase 1 verified
+`POST /optimize` with Claude AI (Master Prompt v2.1) · promotion scoring Celery task · route optimization (Mapbox) · BigQuery price history · +5 chains · Klaviyo · Amplitude EU
 
 ### Phase 3 — Growth
-Predictive shopping · bulk buying · loyalty cards · Stripe · mobile PWA · B2B
+Predictive shopping · bulk buying · household analytics · loyalty card pricing · Stripe billing · mobile PWA · B2B
+
+---
+
+## Key Business Rules (non-negotiable)
+
+1. **All prices in EUR** — Bulgaria adopted the Euro; never use BGN/лв.
+2. **Basket optimization always** — never optimize individual products.
+3. **Every promotion must be scored** — REAL / AVERAGE / FAKE against 30-day history.
+4. **Transport threshold** — only recommend extra stores if net saving > 5 € after fuel + time.
+5. **Unit price normalization** — always compare €/kg or €/l, never package price.
+6. **GDPR from day one** — soft delete on all models, AES-256 on personal data, Amplitude EU only.
